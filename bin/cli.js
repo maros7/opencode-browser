@@ -246,11 +246,34 @@ function resolveNodePath() {
 function writeHostWrapper(nodePath) {
   ensureDir(BASE_DIR);
   if (isWindows()) {
-    const script = `@echo off\r\n"${nodePath}" "${NATIVE_HOST_DST}"\r\n`;
+    const script = `@echo off\r\n` +
+      `if defined OPENCODE_BROWSER_NODE (\r\n` +
+      `  "%OPENCODE_BROWSER_NODE%" "${NATIVE_HOST_DST}"\r\n` +
+      `  exit /b %errorlevel%\r\n` +
+      `)\r\n` +
+      `where node >nul 2>&1 && (\r\n` +
+      `  node "${NATIVE_HOST_DST}"\r\n` +
+      `  exit /b %errorlevel%\r\n` +
+      `)\r\n` +
+      `"${nodePath}" "${NATIVE_HOST_DST}"\r\n`;
     writeFileSync(NATIVE_HOST_WRAPPER, script);
     return NATIVE_HOST_WRAPPER;
   }
-  const script = `#!/bin/sh\n"${nodePath}" "${NATIVE_HOST_DST}"\n`;
+  const script = `#!/bin/sh\n` +
+    `# Resolve node at runtime to survive version upgrades (brew, nvm, volta, etc.)\n` +
+    `if [ -n "$OPENCODE_BROWSER_NODE" ] && [ -x "$OPENCODE_BROWSER_NODE" ]; then\n` +
+    `  exec "$OPENCODE_BROWSER_NODE" "${NATIVE_HOST_DST}"\n` +
+    `fi\n` +
+    `for candidate in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do\n` +
+    `  if [ -x "$candidate" ]; then\n` +
+    `    exec "$candidate" "${NATIVE_HOST_DST}"\n` +
+    `  fi\n` +
+    `done\n` +
+    `if command -v node >/dev/null 2>&1; then\n` +
+    `  exec node "${NATIVE_HOST_DST}"\n` +
+    `fi\n` +
+    `# Fallback to path resolved at install time\n` +
+    `exec "${nodePath}" "${NATIVE_HOST_DST}"\n`;
   writeFileSync(NATIVE_HOST_WRAPPER, script, { mode: 0o755 });
   chmodSync(NATIVE_HOST_WRAPPER, 0o755);
   return NATIVE_HOST_WRAPPER;
