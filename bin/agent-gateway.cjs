@@ -3,13 +3,23 @@
 
 const net = require("net");
 const os = require("os");
+const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
 const session =
   (process.env.OPENCODE_BROWSER_AGENT_SESSION || process.env.AGENT_BROWSER_SESSION || "default").trim();
+
+function getSocketDir() {
+  const override = (process.env.AGENT_BROWSER_SOCKET_DIR || "").trim();
+  if (override) return override;
+  const xdg = (process.env.XDG_RUNTIME_DIR || "").trim();
+  if (xdg) return path.join(xdg, "agent-browser");
+  return path.join(os.homedir(), ".agent-browser");
+}
+
 const socketPath =
-  process.env.OPENCODE_BROWSER_AGENT_SOCKET || path.join(os.tmpdir(), `agent-browser-${session}.sock`);
+  process.env.OPENCODE_BROWSER_AGENT_SOCKET || path.join(getSocketDir(), `${session}.sock`);
 
 function getPortForSession(name) {
   let hash = 0;
@@ -25,11 +35,37 @@ const port =
   Number(process.env.OPENCODE_BROWSER_AGENT_GATEWAY_PORT || process.env.OPENCODE_BROWSER_AGENT_PORT) ||
   getPortForSession(session);
 
+function getAgentBinaryName() {
+  const osName = os.platform();
+  const cpuArch = os.arch();
+  let osKey;
+  switch (osName) {
+    case "darwin": osKey = "darwin"; break;
+    case "linux": osKey = "linux"; break;
+    case "win32": osKey = "win32"; break;
+    default: return null;
+  }
+  let archKey;
+  switch (cpuArch) {
+    case "x64": archKey = "x64"; break;
+    case "arm64": archKey = "arm64"; break;
+    default: return null;
+  }
+  const ext = osName === "win32" ? ".exe" : "";
+  return `agent-browser-${osKey}-${archKey}${ext}`;
+}
+
 function resolveDaemonPath() {
   const override = process.env.OPENCODE_BROWSER_AGENT_DAEMON;
   if (override) return override;
   try {
-    return require.resolve("agent-browser/dist/daemon.js");
+    const binJsPath = require.resolve("agent-browser/bin/agent-browser.js");
+    const binDir = path.dirname(binJsPath);
+    const binaryName = getAgentBinaryName();
+    if (!binaryName) return null;
+    const binaryPath = path.join(binDir, binaryName);
+    if (fs.existsSync(binaryPath)) return binaryPath;
+    return null;
   } catch {
     return null;
   }
@@ -48,7 +84,9 @@ function startDaemon() {
     return;
   }
   try {
-    const child = spawn(process.execPath, [daemonPath], {
+    const socketDir = getSocketDir();
+    fs.mkdirSync(socketDir, { recursive: true });
+    const child = spawn(daemonPath, [], {
       detached: true,
       stdio: "ignore",
       env: {

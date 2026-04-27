@@ -1,6 +1,6 @@
 import net from "net";
-import { mkdirSync, readFileSync } from "fs";
-import { homedir, tmpdir } from "os";
+import { existsSync, mkdirSync, readFileSync } from "fs";
+import { homedir, platform, arch, tmpdir } from "os";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { spawn } from "child_process";
 import { createRequire } from "module";
@@ -84,6 +84,14 @@ function getAgentPortForSession(session: string): number {
   return 49152 + (Math.abs(hash) % 16383);
 }
 
+function getAgentSocketDir(): string {
+  const override = process.env.AGENT_BROWSER_SOCKET_DIR?.trim();
+  if (override) return override;
+  const xdg = process.env.XDG_RUNTIME_DIR?.trim();
+  if (xdg) return join(xdg, "agent-browser");
+  return join(homedir(), ".agent-browser");
+}
+
 function getAgentConnectionInfo(session: string): AgentConnectionInfo {
   const socketOverride = process.env.OPENCODE_BROWSER_AGENT_SOCKET?.trim();
   if (socketOverride) {
@@ -101,26 +109,51 @@ function getAgentConnectionInfo(session: string): AgentConnectionInfo {
     return { type: "tcp", host, port };
   }
 
-  return { type: "unix", path: join(tmpdir(), `agent-browser-${session}.sock`) };
+  const socketDir = getAgentSocketDir();
+  return { type: "unix", path: join(socketDir, `${session}.sock`) };
 }
 
 function isLocalHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
 
+function getAgentBinaryName(): string | null {
+  const os = platform();
+  const cpuArch = arch();
+
+  let osKey: string;
+  switch (os) {
+    case "darwin": osKey = "darwin"; break;
+    case "linux": osKey = "linux"; break;
+    case "win32": osKey = "win32"; break;
+    default: return null;
+  }
+
+  let archKey: string;
+  switch (cpuArch) {
+    case "x64": archKey = "x64"; break;
+    case "arm64": archKey = "arm64"; break;
+    default: return null;
+  }
+
+  const ext = os === "win32" ? ".exe" : "";
+  return `agent-browser-${osKey}-${archKey}${ext}`;
+}
+
 function resolveAgentDaemonPath(): string | null {
   const override = process.env.OPENCODE_BROWSER_AGENT_DAEMON?.trim();
   if (override) return override;
   try {
-    return agentRequire.resolve("agent-browser/dist/daemon.js");
+    const binJsPath = agentRequire.resolve("agent-browser/bin/agent-browser.js");
+    const binDir = dirname(binJsPath);
+    const binaryName = getAgentBinaryName();
+    if (!binaryName) return null;
+    const binaryPath = join(binDir, binaryName);
+    if (existsSync(binaryPath)) return binaryPath;
+    return null;
   } catch {
     return null;
   }
-}
-
-function resolveAgentNodePath(): string {
-  const override = process.env.OPENCODE_BROWSER_AGENT_NODE?.trim();
-  return override || process.execPath;
 }
 
 export function getAgentPackageVersion(): string | null {
@@ -149,7 +182,9 @@ async function maybeStartAgentDaemon(connection: AgentConnectionInfo, session: s
     );
   }
   try {
-    const child = spawn(resolveAgentNodePath(), [daemonPath], {
+    const socketDir = getAgentSocketDir();
+    mkdirSync(socketDir, { recursive: true });
+    const child = spawn(daemonPath, [], {
       detached: true,
       stdio: "ignore",
       env: {

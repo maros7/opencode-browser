@@ -1,11 +1,15 @@
 var __defProp = Object.defineProperty;
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, {
       get: all[name],
       enumerable: true,
       configurable: true,
-      set: (newValue) => all[name] = () => newValue
+      set: __exportSetter.bind(all, name)
     });
 };
 
@@ -12334,8 +12338,8 @@ import net2 from "net";
 
 // src/agent-backend.ts
 import net from "net";
-import { mkdirSync, readFileSync } from "fs";
-import { homedir, tmpdir } from "os";
+import { existsSync, mkdirSync, readFileSync } from "fs";
+import { homedir, platform, arch } from "os";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { spawn } from "child_process";
 import { createRequire } from "module";
@@ -12392,6 +12396,15 @@ function getAgentPortForSession(session) {
   }
   return 49152 + Math.abs(hash2) % 16383;
 }
+function getAgentSocketDir() {
+  const override = process.env.AGENT_BROWSER_SOCKET_DIR?.trim();
+  if (override)
+    return override;
+  const xdg = process.env.XDG_RUNTIME_DIR?.trim();
+  if (xdg)
+    return join(xdg, "agent-browser");
+  return join(homedir(), ".agent-browser");
+}
 function getAgentConnectionInfo(session) {
   const socketOverride = process.env.OPENCODE_BROWSER_AGENT_SOCKET?.trim();
   if (socketOverride) {
@@ -12406,24 +12419,60 @@ function getAgentConnectionInfo(session) {
     const port = portOverride ?? getAgentPortForSession(session);
     return { type: "tcp", host, port };
   }
-  return { type: "unix", path: join(tmpdir(), `agent-browser-${session}.sock`) };
+  const socketDir = getAgentSocketDir();
+  return { type: "unix", path: join(socketDir, `${session}.sock`) };
 }
 function isLocalHost(host) {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+function getAgentBinaryName() {
+  const os = platform();
+  const cpuArch = arch();
+  let osKey;
+  switch (os) {
+    case "darwin":
+      osKey = "darwin";
+      break;
+    case "linux":
+      osKey = "linux";
+      break;
+    case "win32":
+      osKey = "win32";
+      break;
+    default:
+      return null;
+  }
+  let archKey;
+  switch (cpuArch) {
+    case "x64":
+      archKey = "x64";
+      break;
+    case "arm64":
+      archKey = "arm64";
+      break;
+    default:
+      return null;
+  }
+  const ext = os === "win32" ? ".exe" : "";
+  return `agent-browser-${osKey}-${archKey}${ext}`;
 }
 function resolveAgentDaemonPath() {
   const override = process.env.OPENCODE_BROWSER_AGENT_DAEMON?.trim();
   if (override)
     return override;
   try {
-    return agentRequire.resolve("agent-browser/dist/daemon.js");
+    const binJsPath = agentRequire.resolve("agent-browser/bin/agent-browser.js");
+    const binDir = dirname(binJsPath);
+    const binaryName = getAgentBinaryName();
+    if (!binaryName)
+      return null;
+    const binaryPath = join(binDir, binaryName);
+    if (existsSync(binaryPath))
+      return binaryPath;
+    return null;
   } catch {
     return null;
   }
-}
-function resolveAgentNodePath() {
-  const override = process.env.OPENCODE_BROWSER_AGENT_NODE?.trim();
-  return override || process.execPath;
 }
 function getAgentPackageVersion() {
   try {
@@ -12450,7 +12499,9 @@ async function maybeStartAgentDaemon(connection, session) {
     throw new Error("agent-browser dependency not found. Install agent-browser or set OPENCODE_BROWSER_AGENT_DAEMON.");
   }
   try {
-    const child = spawn(resolveAgentNodePath(), [daemonPath], {
+    const socketDir = getAgentSocketDir();
+    mkdirSync(socketDir, { recursive: true });
+    const child = spawn(daemonPath, [], {
       detached: true,
       stdio: "ignore",
       env: {
@@ -13108,7 +13159,7 @@ function createAgentBackend(sessionId) {
 }
 
 // src/plugin.ts
-import { appendFileSync, existsSync, mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync } from "fs";
+import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync } from "fs";
 import { homedir as homedir2, userInfo } from "os";
 import { basename as basename2, dirname as dirname2, isAbsolute as isAbsolute2, join as join2, resolve as resolve2 } from "path";
 import { spawn as spawn2 } from "child_process";
@@ -13210,7 +13261,7 @@ function writeJsonLine2(socket, msg) {
 }
 function maybeStartBroker() {
   const brokerPath = join2(BASE_DIR2, "broker.cjs");
-  if (!existsSync(brokerPath))
+  if (!existsSync2(brokerPath))
     return;
   try {
     const child = spawn2(process.execPath, [brokerPath], { detached: true, stdio: "ignore" });
